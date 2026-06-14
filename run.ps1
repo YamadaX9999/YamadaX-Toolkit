@@ -379,6 +379,60 @@ $BtnTimerRemove  = $window.FindName("BtnTimerRemove")
 $BtnMsiRun       = $window.FindName("BtnMsiRun")
 $BtnMsiOpenFolder= $window.FindName("BtnMsiOpenFolder")
 
+# ── Helper: ตรวจสอบโปรแกรมที่ติดตั้งอยู่แล้วในเครื่อง ──────────────────────────
+function Get-InstalledAppNames {
+    # อ่านชื่อโปรแกรมทั้งหมดจาก Uninstall registry (64-bit, 32-bit, และ per-user)
+    $keys = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    $names = foreach ($k in $keys) {
+        Get-ItemProperty $k -ErrorAction SilentlyContinue | ForEach-Object { $_.DisplayName }
+    }
+    $names | Where-Object { $_ }
+}
+
+function Test-AppInstalled {
+    param($Names, [string[]]$Patterns, [string[]]$Paths)
+    foreach ($p in $Patterns) {
+        if ($Names | Where-Object { $_ -like $p }) { return $true }
+    }
+    foreach ($p in $Paths) {
+        if ($p -and (Test-Path $p -ErrorAction SilentlyContinue)) { return $true }
+    }
+    return $false
+}
+
+# ── INSTALL: scan แล้วทำ checkbox ของโปรแกรมที่มีอยู่แล้วให้เป็นสีเทา/ติ๊กไม่ได้ ──
+$installedNames = Get-InstalledAppNames
+
+# แต่ละรายการ = checkbox + เงื่อนไขที่ใช้เช็คว่า "มีอยู่แล้ว"
+#   Patterns = ชื่อใน Uninstall registry (รองรับ wildcard *)
+#   Paths    = ไฟล์/โฟลเดอร์ที่เช็คเพิ่มเติม (เผื่อโปรแกรมไม่มี entry ใน registry)
+$installCheckMap = @(
+    @{ Chk = $ChkFiveM;    Patterns = @();                                                              Paths = @("$env:LOCALAPPDATA\FiveM\FiveM Application Data\FiveM.exe") }
+    @{ Chk = $ChkSteam;    Patterns = @('Steam');                                                        Paths = @("${env:ProgramFiles(x86)}\Steam\steam.exe","$env:ProgramFiles\Steam\steam.exe") }
+    @{ Chk = $ChkRockstar; Patterns = @('Rockstar Games Launcher*');                                     Paths = @() }
+    @{ Chk = $ChkDiscord;  Patterns = @('Discord');                                                      Paths = @("$env:LOCALAPPDATA\Discord\Update.exe") }
+    @{ Chk = $ChkFXSound;  Patterns = @('FxSound*','FXSound*');                                          Paths = @() }
+    @{ Chk = $ChkLossless; Patterns = @('LosslessCut*');                                                 Paths = @() }
+    @{ Chk = $ChkNvidia;   Patterns = @('NVIDIA Graphics Driver*','NVIDIA GeForce Experience*');         Paths = @() }
+    @{ Chk = $ChkDotNet;   Patterns = @('Microsoft .NET Runtime*','Microsoft Windows Desktop Runtime*');  Paths = @("$env:ProgramFiles\dotnet\shared\Microsoft.NETCore.App") }
+    @{ Chk = $Chk7Zip;     Patterns = @('7-Zip*');                                                        Paths = @("$env:ProgramFiles\7-Zip\7z.exe") }
+    @{ Chk = $ChkRazer;    Patterns = @('Razer Synapse*');                                               Paths = @() }
+)
+
+foreach ($entry in $installCheckMap) {
+    try {
+        if (Test-AppInstalled -Names $installedNames -Patterns $entry.Patterns -Paths $entry.Paths) {
+            $entry.Chk.IsChecked = $true
+            $entry.Chk.IsEnabled = $false
+            $entry.Chk.Content   = "$($entry.Chk.Content)  (ติดตั้งแล้ว)"
+        }
+    } catch { }
+}
+
 # ── Helper: log append ────────────────────────────────────────────────────────
 function Write-Log($box, $msg) {
     $box.Text += "`n[$(Get-Date -Format 'HH:mm:ss')] $msg"
@@ -438,8 +492,8 @@ function Install-Winget($id, $name, $logBox) {
 # ── INSTALL: Select All / Clear All ──────────────────────────────────────────
 $allChecks = @($ChkFiveM,$ChkSteam,$ChkRockstar,$ChkDiscord,$ChkFXSound,$ChkLossless,$ChkNvidia,$ChkDotNet,$Chk7Zip,$ChkRazer,$ChkActivate)
 
-$BtnSelectAll.Add_Click({ foreach ($c in $allChecks) { $c.IsChecked = $true } })
-$BtnClearAll.Add_Click({  foreach ($c in $allChecks) { $c.IsChecked = $false } })
+$BtnSelectAll.Add_Click({ foreach ($c in $allChecks) { if ($c.IsEnabled) { $c.IsChecked = $true } } })
+$BtnClearAll.Add_Click({  foreach ($c in $allChecks) { if ($c.IsEnabled) { $c.IsChecked = $false } } })
 
 # ── INSTALL: Install Selected ─────────────────────────────────────────────────
 $BtnInstall.Add_Click({
@@ -447,32 +501,32 @@ $BtnInstall.Add_Click({
     Set-Status "Installing selected programs..."
 
     $wingetPkgs = @{}
-    if ($ChkDiscord.IsChecked)  { $wingetPkgs["Discord.Discord"] = "Discord" }
-    if ($ChkSteam.IsChecked)    { $wingetPkgs["Valve.Steam"] = "Steam" }
-    if ($ChkRockstar.IsChecked) { $wingetPkgs["Rockstar.RockstarGamesLauncher"] = "Rockstar Launcher" }
-    if ($Chk7Zip.IsChecked)     { $wingetPkgs["7zip.7zip"] = "7-Zip" }
-    if ($ChkFXSound.IsChecked)  { $wingetPkgs["FXSound.FXSound"] = "FXSound" }
-    if ($ChkLossless.IsChecked) { $wingetPkgs["mifi.losslesscut"] = "LosslessCut" }
-    if ($ChkRazer.IsChecked)    { $wingetPkgs["Razer.RazerSynapse"] = "Razer Synapse" }
+    if ($ChkDiscord.IsChecked  -and $ChkDiscord.IsEnabled)  { $wingetPkgs["Discord.Discord"] = "Discord" }
+    if ($ChkSteam.IsChecked    -and $ChkSteam.IsEnabled)    { $wingetPkgs["Valve.Steam"] = "Steam" }
+    if ($ChkRockstar.IsChecked -and $ChkRockstar.IsEnabled) { $wingetPkgs["Rockstar.RockstarGamesLauncher"] = "Rockstar Launcher" }
+    if ($Chk7Zip.IsChecked     -and $Chk7Zip.IsEnabled)     { $wingetPkgs["7zip.7zip"] = "7-Zip" }
+    if ($ChkFXSound.IsChecked  -and $ChkFXSound.IsEnabled)  { $wingetPkgs["FXSound.FXSound"] = "FXSound" }
+    if ($ChkLossless.IsChecked -and $ChkLossless.IsEnabled) { $wingetPkgs["mifi.losslesscut"] = "LosslessCut" }
+    if ($ChkRazer.IsChecked    -and $ChkRazer.IsEnabled)    { $wingetPkgs["Razer.RazerSynapse"] = "Razer Synapse" }
 
     foreach ($pkg in $wingetPkgs.GetEnumerator()) {
         Install-Winget $pkg.Key $pkg.Value $InstallLog
     }
 
     # NVIDIA Driver
-    if ($ChkNvidia.IsChecked) {
+    if ($ChkNvidia.IsChecked -and $ChkNvidia.IsEnabled) {
         Write-Log $InstallLog "Installing NVIDIA Driver 610.47 via winget..."
         Install-Winget "Nvidia.GeForce.Experience" "NVIDIA GeForce Experience" $InstallLog
     }
 
     # .NET Runtime
-    if ($ChkDotNet.IsChecked) {
+    if ($ChkDotNet.IsChecked -and $ChkDotNet.IsEnabled) {
         Write-Log $InstallLog "Installing .NET Runtime..."
         Install-Winget "Microsoft.DotNet.Runtime.9" ".NET Runtime" $InstallLog
     }
 
     # FiveM
-    if ($ChkFiveM.IsChecked) {
+    if ($ChkFiveM.IsChecked -and $ChkFiveM.IsEnabled) {
         Write-Log $InstallLog "Downloading FiveM from setup script..."
         Run-ScriptAsync "https://raw.githubusercontent.com/YamadaX9999/setuppc/main/setup.ps1" $InstallLog "FiveM + Settings"
     }
@@ -528,11 +582,34 @@ $BtnMsiRun.Add_Click({
     $job = Start-Job -ScriptBlock {
         param($u, $d)
         try {
-            Invoke-WebRequest $u -OutFile $d -UseBasicParsing
-            Start-Process $d
-            "Downloaded and launched: $d"
+            if (Test-Path $d) { Remove-Item $d -Force -ErrorAction SilentlyContinue }
+
+            Invoke-WebRequest -Uri $u -OutFile $d -UseBasicParsing -ErrorAction Stop
+
+            if (-not (Test-Path $d)) {
+                return "ERROR: ดาวน์โหลดเสร็จแต่ไม่พบไฟล์ที่ $d — Windows Defender อาจลบไฟล์ทิ้งทันที (เช็คได้ที่ Windows Security > Protection history)"
+            }
+
+            $size = (Get-Item $d).Length
+
+            # เช็คว่าไฟล์ที่ได้เป็น .exe จริง (เริ่มด้วย MZ header) หรือเป็นหน้า error/HTML ที่ดาวน์โหลดมาแทน
+            $bytes = New-Object byte[] 2
+            $fs = [System.IO.File]::OpenRead($d)
+            [void]$fs.Read($bytes, 0, 2)
+            $fs.Close()
+
+            if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+                Remove-Item $d -Force -ErrorAction SilentlyContinue
+                return "ERROR: ไฟล์ที่ได้ ($size bytes) ไม่ใช่ไฟล์ .exe จริง (ไม่มี MZ header) — ลิงก์ดาวน์โหลดน่าจะผิด/ไม่มีไฟล์ release ที่ปลายทาง ได้หน้า error/HTML กลับมาแทน"
+            }
+
+            # เอา Mark-of-the-Web ออก ไม่ให้ SmartScreen เด้งเตือนแบบเงียบๆแล้วไม่เปิดอะไรขึ้นมาเลย
+            Unblock-File -Path $d -ErrorAction SilentlyContinue
+
+            Start-Process $d -ErrorAction Stop
+            "Downloaded and launched: $d (size: $([math]::Round($size/1KB,1)) KB)"
         } catch {
-            "ERROR: $_"
+            "ERROR: $($_.Exception.Message)"
         }
     } -ArgumentList $url, $dest
 
@@ -544,7 +621,11 @@ $BtnMsiRun.Add_Click({
             $r = Receive-Job $job -ErrorAction SilentlyContinue
             Remove-Job $job
             Write-Log $MsiLog $r
-            Set-Status "MSI Utility launched"
+            if ($r -match '^ERROR') {
+                Set-Status "MSI Utility: ดาวน์โหลด/เปิดไม่สำเร็จ — ดู Log ด้านล่าง"
+            } else {
+                Set-Status "MSI Utility launched"
+            }
         }
     })
     $timer.Start()
